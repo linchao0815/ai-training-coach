@@ -1,0 +1,8 @@
+wiki/.pending-ingest
+.obsidian/
+__pycache__/
+.pytest_cache/
+.env
+my.md
+~$*
+.temp/

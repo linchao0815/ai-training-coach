@@ -1,0 +1,64 @@
+#!/bin/sh
+#
+# post-commit — 把「動到 wiki 來源白名單」的 commit 排進 wiki/.pending-ingest
+#
+# 白名單與寫佇列的實作在同目錄的 lib-queue.sh（post-merge 共用同一份）。
+#
+# 設計原則：
+#   - 不阻塞 commit（post-commit 本身的 exit code git 也不看，但不做任何危險操作）
+#   - 不自動花 token 去 ingest，只排隊；「要不要處理」留給下一次真正的對話決定
+#   - 只 append，不去重；去重由讀佇列的一方做（WIKI.md ingest 流程第 1 步）
+#
+# 本檔在版控裡（githooks/），靠 core.hooksPath 生效。安裝方式見 README.md。
+
+set -u
+
+root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+[ -n "$root" ] || exit 0
+
+. "$root/githooks/lib-queue.sh" || exit 0
+
+# rebase 期間不排隊（2026-08-17 新增）。
+#
+# 為什麼：rebase 會為每個被重放的 commit 各觸發一次 post-commit，而那些 commit 的
+# 內容早就 ingest 過了。2026-08-16 push 前 rebase 13 個 commit，佇列就被灌進 13 筆
+# 已處理過的來源檔——全是假的，得手動清掉。hook 本身分不出「新 commit」與「重放的
+# 舊 commit」，只能靠 git 的狀態目錄判斷。
+#
+# `rebase-merge` 是互動式/merge 型 rebase，`rebase-apply` 是 am 型 rebase 與
+# `git am` 本身。兩者都只在進行中存在，rebase 結束就消失。
+#
+# 刻意不涵蓋 `git cherry-pick`：那是把內容**帶進這個分支**，對這個分支而言是新到達
+# 的變更，排進佇列是合理的，不是雜訊。
+gitdir=$(git rev-parse --git-dir 2>/dev/null) || exit 0
+if [ -d "$gitdir/rebase-merge" ] || [ -d "$gitdir/rebase-apply" ]; then
+	exit 0
+fi
+
+# git 呼叫 post-commit 時不帶參數，所以 $1 永遠是空的 → 實際運作等同 HEAD。
+# 留這個參數純粹是為了可測試：`githooks/post-commit <commit> --dry-run` 可以拿歷史
+# commit 驗證白名單比對結果，不動到真正的佇列。
+target=${1:-HEAD}
+dry_run=${2:-}
+
+sha=$(git rev-parse --short "$target" 2>/dev/null) || exit 0
+
+# --root 讓初始 commit（無 parent）也能列出檔案；-m --first-parent 讓 merge commit
+# 只跟第一個 parent 比，不會噴出整個 merge 的雙向 diff。
+#
+# core.quotepath=false 是必要的，不是可選的美化：git 預設把非 ASCII 路徑輸出成
+# `"raw/\345\201\245..."`（前後加雙引號＋八進位轉義），開頭那個 `"` 會讓 lib-queue.sh
+# 裡所有 case pattern 比對失敗——這個 repo 的 raw/ 全是中文檔名（健康存摺匯出檔），
+# 沒有這個設定的話 `raw/*.JSON` 這條白名單等於完全失效（2026-07-26 發現）。
+changes=$(git -c core.quotepath=false diff-tree --no-commit-id --name-status \
+	-r -m --first-parent --root "$sha" 2>/dev/null) || exit 0
+[ -n "$changes" ] || exit 0
+
+matched=$(queue_changes "$sha" "$changes")
+write_queue "$root" "本次 commit " "$dry_run" "$matched"
+
+[ "$dry_run" = "--dry-run" ] && exit 0
+
+run_verifier "$root" "$changes"
+
+exit 0

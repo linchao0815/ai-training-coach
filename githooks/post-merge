@@ -1,0 +1,62 @@
+#!/bin/sh
+#
+# post-merge — 把「pull 進來的來源檔變更」排進 wiki/.pending-ingest
+#
+# 為什麼需要這支（2026-08-18 新增）
+# ---------------------------------
+# `wiki/.pending-ingest` 是 gitignore 的**本機檔案**，不進版控。所以在 A 機器
+# commit 時排進去的佇列，B 機器 `git pull` 之後**不會出現**——那些變更在 B 機器
+# 從來沒有排過隊。
+#
+# 這個洞是靜默的，而且會偽裝成好消息：2026-08-18 這台機器 pull 進 20 個檔案的
+# 變更（含 W34 課表、多個 data/analysis/*.json、coros.db），佇列卻是空的，讀起來
+# 像「都處理完了」。實際上是「從來沒排過」。
+#
+# post-merge 在 `git pull`（fast-forward 或 merge）完成後觸發，用 ORIG_HEAD..HEAD
+# 這個區間去比對白名單，補上這一段。
+#
+# 涵蓋不到的情況，寫清楚不要假裝有覆蓋：
+#   - `git pull --rebase` 走的是 post-rewrite，不是 post-merge。這個 repo 平常
+#     不用 --rebase pull，先不處理；真的要用時佇列會漏，得手動確認。
+#   - `git reset --hard <remote>` 之類的直接搬 HEAD 完全不觸發任何 hook。
+#   - hook 不隨 clone 複製，新環境要先跑 `git config core.hooksPath githooks`
+#     （見 README.md）。這支跟 post-commit 共用同一個設定，不需要額外安裝步驟。
+#
+# 設計原則與 post-commit 相同：不阻塞、不自動 ingest、只排隊。
+
+set -u
+
+root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+[ -n "$root" ] || exit 0
+
+. "$root/githooks/lib-queue.sh" || exit 0
+
+# git 呼叫 post-merge 時帶的 $1 是 is-squash flag，不是 commit。
+# 這裡的參數是為了可測試：`githooks/post-merge <base> <head> --dry-run`。
+base=${1:-ORIG_HEAD}
+head=${2:-HEAD}
+dry_run=${3:-}
+
+# 被 git 直接呼叫時 $1 是 0/1 的 squash flag，換回預設值。
+case "$base" in
+	0|1) base=ORIG_HEAD ;;
+esac
+
+git rev-parse --verify --quiet "$base" >/dev/null 2>&1 || exit 0
+
+# 用區間的終點當 sha 記進佇列——pull 進來的可能是好幾個 commit，逐一列出只會
+# 讓佇列變吵；ingest 時真正要看的是「哪些來源檔變了」，不是哪個 commit 改的。
+sha=$(git rev-parse --short "$head" 2>/dev/null) || exit 0
+
+# 與 post-commit 同理，core.quotepath=false 是必要的（raw/ 全是中文檔名）。
+changes=$(git -c core.quotepath=false diff --name-status "$base" "$head" 2>/dev/null) || exit 0
+[ -n "$changes" ] || exit 0
+
+matched=$(queue_changes "$sha" "$changes")
+write_queue "$root" "本次 pull " "$dry_run" "$matched"
+
+[ "$dry_run" = "--dry-run" ] && exit 0
+
+run_verifier "$root" "$changes"
+
+exit 0

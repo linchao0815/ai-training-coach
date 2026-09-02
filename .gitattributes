@@ -1,0 +1,20 @@
+# SQLite 資料檔一律視為 binary，不做差異比對。
+#
+# 理由：`data/coros.db`（結構化訓練資料）與 `data/detail/*.db`、`data/garmin_detail/*.db`
+# （活動巨量巢狀明細）都是刻意進版控的（見 README.md「儲存設計」一節），每次
+# fetch/analyze 都會整檔改寫。git 預設會嘗試對它們做文字差異比對，結果是
+# `git diff` / `git log -p` 噴出無意義的亂碼、diff 極慢，且合併時可能產生損毀的檔案。
+#
+# `binary` 是 `-diff -merge -text` 的巨集：不產生 diff、不嘗試三方合併、不做行尾轉換。
+*.db binary
+
+# CSV 是純文字且 diff 有意義（人工快速瀏覽用的活動列表），刻意不列入。
+
+# git hook 一律以 LF checkout，不受 core.autocrlf 影響。
+#
+# 這台機器 core.autocrlf=true，而 githooks/ 底下是 shell script。沒有這條規則的話
+# 新環境 clone 會拿到 CRLF 版本，shebang 變成 `#!/bin/sh\r`，sh 找不到解譯器 →
+# **hook 完全不執行、而且不會有任何錯誤訊息**。這正是 README.md 記載過兩次的那種
+# 「環境相依的靜默失效」（2026-07-26 hook 消失、2026-08-18 佇列漏 pull），
+# 只是換一個成因。
+githooks/** text eol=lf
