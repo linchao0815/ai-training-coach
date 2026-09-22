@@ -661,7 +661,10 @@ class TestBuildStepsWithRepeatGroup(unittest.TestCase):
         # not physically repeated N times here.
         group = build_steps(_repeat_group_segments())[1]
         self.assertEqual(len(group["steps"]), 2)
-        self.assertEqual(group["steps"][0]["name"], "閾值4min (4:15-4:25/km)")
+        # 2026-09-20 契約變更：重複組內的名稱不再帶配速後綴。COROS 錶上重複組的
+        # 子步驟顯示在畫面最下方，`閾值4min (4:15-4:25/km)` 這種長度會被截斷
+        # （使用者回報）。配速由 COROS 自己的欄位顯示，塞進名稱是重複資訊。
+        self.assertEqual(group["steps"][0]["name"], "閾值4min")
         self.assertEqual(group["steps"][0]["target_duration_seconds"], 240)
         self.assertEqual(group["steps"][1]["target_duration_seconds"], 90)
 
@@ -778,3 +781,57 @@ class TestVerifyWithRepeatGroup(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRepeatGroupStepNamesAreShort(unittest.TestCase):
+    """重複組裡的步驟名稱要短——COROS 錶上重複組的子步驟顯示在畫面最下方會被截斷。
+
+    2026-09-20 使用者回報：4×4min 閾值課在錶上「重複組數顯示在最下面顯示不完整」。
+    名稱原本是 `{段落名} ({配速})`，例如 `間歇 (4:08-4:15/km)` ＝ 17 個字元。配速在
+    COROS 上本來就是獨立欄位會另外顯示，塞進名稱裡是重複資訊，卻正好把名稱撐長到
+    被截掉。所以**重複組內的步驟只留段落名**。
+
+    頂層步驟（長跑的熱身/Easy/馬配段/收操）維持原樣——那裡顯示正常，而且名稱帶配速
+    在檢視整份課表時有用。`verify()` 只拿名稱當錯誤訊息的標籤、不比對它，所以這個
+    改動不影響讀回驗證。
+    """
+
+    PLAN = """<!-- coros: day=2026-09-23 name=閾值課 -->
+
+| 段落 | 距離 | 配速 |
+|---|---|---|
+| 熱身 | 15分鐘 | 5:45-6:00/km |
+>>> 重複 4 組
+| 間歇 | 4分鐘 | 4:08-4:15/km |
+| 組間 | 90秒 | 6:30-7:00/km |
+<<<
+| 收操 | 10分鐘 | 5:45-6:00/km |
+"""
+
+    def _steps(self):
+        return build_steps(parse_plan(self.PLAN)[0].segments)
+
+    def test_steps_inside_a_repeat_group_carry_no_pace_suffix(self):
+        steps = self._steps()
+        group = next(s for s in steps if s.get("kind") == "repeat")
+        names = [c["name"] for c in group["steps"]]
+        self.assertEqual(["間歇", "組間"], names,
+                         "重複組內的名稱要短，配速由 COROS 自己的欄位顯示")
+        for n in names:
+            self.assertNotIn("/km", n)
+            self.assertNotIn("(", n)
+
+    def test_top_level_steps_keep_the_pace_in_the_name(self):
+        steps = self._steps()
+        top = [s for s in steps if s.get("kind") != "repeat"]
+        self.assertTrue(any("5:45-6:00/km" in s["name"] for s in top),
+                        "頂層步驟顯示正常，名稱帶配速在檢視整份課表時有用，不要一起改掉")
+
+    def test_repeat_group_children_still_carry_the_right_pace_fields(self):
+        """名稱變短不能動到真正決定錶上目標的欄位。"""
+        steps = self._steps()
+        group = next(s for s in steps if s.get("kind") == "repeat")
+        interval = group["steps"][0]
+        self.assertEqual(248, interval["intensity_value"])        # 4:08
+        self.assertEqual(255, interval["intensity_value_extend"])  # 4:15
+        self.assertEqual(240, interval["target_duration_seconds"])

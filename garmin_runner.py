@@ -110,7 +110,19 @@ def _build_repeat_group(item, step_order):
         _build_step(child, step_order + 1 + i)
         for i, child in enumerate(item["steps"])
     ]
-    return create_repeat_group(item["repeat_count"], child_steps, step_order)
+    group = create_repeat_group(item["repeat_count"], child_steps, step_order)
+    # `WorkoutSegment.workoutSteps` 宣告成 `list[ExecutableStep | RepeatGroup]`。
+    # pydantic 2 正確保留 RepeatGroup；**pydantic 1 沒有那種 union 支援，會把它
+    # 轉型成 ExecutableStep 並丟掉 numberOfIterations**——上傳一個沒有重複次數的
+    # 課表，而且完全不報錯（2026-09-13 查出，當時看起來像 garmin_runner 壞了，
+    # 其實是測試環境少了 garminconnect[workout] 帶來的 pydantic>=2）。
+    if getattr(group, "numberOfIterations", None) is None:
+        raise RuntimeError(
+            "重複組被轉型成不帶 numberOfIterations 的物件，通常是 pydantic 版本太舊"
+            "（需要 >=2，由 garminconnect[workout] extra 提供）。硬送上去會得到一份"
+            "沒有重複次數的課表，所以在這裡擋下來。"
+        )
+    return group
 
 
 def build_workout(name, steps):

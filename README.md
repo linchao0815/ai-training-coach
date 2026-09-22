@@ -86,6 +86,20 @@ python create_garmin_workouts.py --plan doc/example-training-plan.md --dry-run
 uv run create_garmin_workouts.py --plan doc/example-training-plan.md
 ```
 
+⚠️ **測試 Garmin 重複組（`>>> 重複 N 組 ... <<<`）時，`unittest discover` 這樣裸跑會靜默少測**：
+`garminconnect[workout]` 的 `[workout]` extra 不能省，它帶的是 **pydantic ≥2**。只裝
+`garminconnect`（沒有 `[workout]`）會拿到 pydantic 1，而 `WorkoutSegment.workoutSteps`
+宣告成 `list[ExecutableStep | RepeatGroup]`——**pydantic 1 沒有那種 union 支援，會把
+RepeatGroup 靜默轉型成 ExecutableStep 並丟掉 `numberOfIterations`**，上傳一個沒有重複
+次數的壞課表且完全不報錯。`garmin_runner._build_repeat_group()` 現在會在偵測到這種轉型
+時直接丟 `RuntimeError`，但要先裝對依賴這個檢查才有機會跑到。完整跑測試（含這個情境的
+回歸測試）用：
+
+```bash
+uv run --with pytest --with "garminconnect[workout]" --with fit-tool --with fitdecode \
+    python -m pytest tests -q
+```
+
 直接用系統 `python` 執行 `fetch_training_data.py` 也可以——它偵測不到 `coros_api` 時會自動改用上述 venv 重新啟動。`analyze_training.py` 只用標準庫（含 `sqlite3`），任何 Python 3 都能跑。
 
 其他參數：`--since YYYYMMDD` 指定固定起始日；`--refresh-recent-days N`（預設14）控制多近的活動一律重抓細節而不是讀快取（COROS App 事後補的訓練感受評分/備註需要重抓才看得到）。

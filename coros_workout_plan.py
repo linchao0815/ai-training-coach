@@ -274,7 +274,7 @@ def _format_pace(fast_s, slow_s):
     return f"{fast_s // 60}:{fast_s % 60:02d}-{slow_s // 60}:{slow_s % 60:02d}/km"
 
 
-def build_steps(segments):
+def build_steps(segments, short_names=False):
     """Segments -> coros_api run steps, with both display units pinned to km.
 
     Deliberately does NOT emit the `pace` / `intensity_label` fields: that path
@@ -313,12 +313,18 @@ def build_steps(segments):
             steps.append({
                 "kind": "repeat",
                 "repeat": segment.repeat_count,
-                "steps": build_steps(segment.steps),
+                # 重複組的子步驟在 COROS 錶上顯示在畫面最下方，名稱太長會被截斷
+                # （2026-09-20 使用者回報 4×4min 閾值課「重複組數顯示不完整」）。
+                # 配速在 COROS 本來就是獨立欄位會另外顯示，塞進名稱是重複資訊，
+                # 卻正好把 `間歇` 撐成 `間歇 (4:08-4:15/km)` 共 17 個字元。
+                # 所以組內只留段落名；頂層步驟維持帶配速（那裡顯示正常）。
+                "steps": build_steps(segment.steps, short_names=True),
             })
             continue
         step = {
             "kind": segment.kind,
-            "name": f"{segment.name} ({_format_pace(segment.pace_fast_s, segment.pace_slow_s)})",
+            "name": segment.name if short_names else
+                    f"{segment.name} ({_format_pace(segment.pace_fast_s, segment.pace_slow_s)})",
             "intensity_type": 3,
             "is_intensity_percent": False,
             "intensity_value": segment.pace_fast_s,
